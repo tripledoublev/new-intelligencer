@@ -4,6 +4,15 @@ bin/
 # Digest workspaces
 digest-*/
 
+# Local env
+.env
+
+# Local digest runtime state accidentally created in source tree
+plumbing/digest/categorization-state.json
+plumbing/digest/categorization-state.lock
+plumbing/digest/consolidation-state.json
+plumbing/digest/consolidation-state.lock
+
 # Go build artifacts
 *.exe
 *.exe~
