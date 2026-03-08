@@ -188,6 +188,46 @@ func BuildIndex(posts []Post) PostsIndex {
 	return index
 }
 
+// LoadConfig reads workspace configuration from a JSON file.
+func LoadConfig(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("reading config file: %w", err)
+	}
+
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return Config{}, fmt.Errorf("parsing config JSON: %w", err)
+	}
+
+	return config, nil
+}
+
+// SaveConfig writes workspace configuration to a JSON file atomically.
+func SaveConfig(path string, config Config) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	tempFile := path + ".tmp"
+	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+
+	if err := os.Rename(tempFile, path); err != nil {
+		os.Remove(tempFile)
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
+
+	return nil
+}
+
 // LoadNewspaperConfig reads the project-level newspaper config
 // Returns error if file doesn't exist (it's required)
 func LoadNewspaperConfig(path string) (NewspaperConfig, error) {

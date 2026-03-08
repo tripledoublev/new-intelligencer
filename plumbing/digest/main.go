@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -17,6 +18,11 @@ var (
 )
 
 func main() {
+	if err := loadDotEnv(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading .env: %v\n", err)
+		os.Exit(1)
+	}
+
 	if err := rootCmd.Execute(); err != nil {
 		// Cobra already printed the error, just exit
 		os.Exit(1)
@@ -61,6 +67,8 @@ func init() {
 	rootCmd.AddCommand(autoGroupRemainingCmd)
 	rootCmd.AddCommand(addToStoryCmd)
 	rootCmd.AddCommand(markBatchDoneCmd)
+	rootCmd.AddCommand(overnightCmd)
+	rootCmd.AddCommand(publishBlueskyCmd)
 
 	// Status command flags
 	statusCmd.Flags().StringVar(&statusWaitFor, "wait-for", "", "Block until stage completes (categorization|consolidation|headlines)")

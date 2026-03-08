@@ -111,9 +111,17 @@ type DisplayQuote struct {
 
 // Config holds workspace configuration
 type Config struct {
-	Version   string    `json:"version"`
-	CreatedAt time.Time `json:"created_at"`
-	TimeRange TimeRange `json:"time_range"`
+	Version   string           `json:"version"`
+	CreatedAt time.Time        `json:"created_at"`
+	TimeRange TimeRange        `json:"time_range"`
+	Pipeline  PipelineSettings `json:"pipeline,omitempty"`
+}
+
+// PipelineSettings captures how a workspace should be processed and rendered.
+type PipelineSettings struct {
+	Provider     string `json:"provider,omitempty"`      // "claude" or "ollama"
+	OutputFormat string `json:"output_format,omitempty"` // "html" or "markdown"
+	Model        string `json:"model,omitempty"`
 }
 
 // TimeRange specifies the time window for fetching posts
@@ -153,8 +161,8 @@ type NewspaperConfig struct {
 // StoryGroup represents consolidated posts about same news story (created by agent)
 type StoryGroup struct {
 	ID              string   `json:"id"`
-	Headline        string   `json:"headline,omitempty"`         // Final headline (set in headline step)
-	DraftHeadline   string   `json:"draft_headline,omitempty"`   // Consolidator's suggested headline
+	Headline        string   `json:"headline,omitempty"`       // Final headline (set in headline step)
+	DraftHeadline   string   `json:"draft_headline,omitempty"` // Consolidator's suggested headline
 	Summary         string   `json:"summary,omitempty"`
 	ArticleURL      string   `json:"article_url,omitempty"`
 	PostRkeys       []string `json:"post_rkeys"`
@@ -169,10 +177,10 @@ type StoryGroup struct {
 // StoryGroups maps story group ID to story group data
 type StoryGroups map[string]StoryGroup
 
-// ContentPicks tracks Claude's picks for content sections
+// ContentPicks tracks editorial picks for content sections
 type ContentPicks struct {
 	SectionID  string   `json:"section_id"`
-	SuiGeneris []string `json:"sui_generis"` // rkeys Claude finds interesting
+	SuiGeneris []string `json:"sui_generis"` // rkeys the editor finds interesting
 }
 
 // AllContentPicks maps section ID to content picks

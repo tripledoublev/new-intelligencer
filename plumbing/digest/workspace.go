@@ -56,6 +56,29 @@ func (wd *WorkspaceData) GetReplies(parentRkey string) []string {
 	return wd.ThreadReplies[parentRkey]
 }
 
+// GetThreadRoots returns posts that are not replies to another post in the workspace.
+func (wd *WorkspaceData) GetThreadRoots() []Post {
+	repliesInDataset := make(map[string]bool)
+	for _, post := range wd.Posts {
+		if post.ReplyTo == nil {
+			continue
+		}
+		parentRkey := extractRkeyFromURI(post.ReplyTo.URI)
+		if _, ok := wd.Index[parentRkey]; ok {
+			repliesInDataset[post.Rkey] = true
+		}
+	}
+
+	var roots []Post
+	for _, post := range wd.Posts {
+		if !repliesInDataset[post.Rkey] {
+			roots = append(roots, post)
+		}
+	}
+
+	return roots
+}
+
 // GetWorkspaceDir returns the workspace directory path
 // Uses --dir flag if set, otherwise finds the most recent digest-* in current directory
 func GetWorkspaceDir() (string, error) {
@@ -113,10 +136,11 @@ func LoadWorkspace(dir string) (*WorkspaceData, error) {
 	// Load config
 	configPath := filepath.Join(dir, "config.json")
 	if _, err := os.Stat(configPath); err == nil {
-		var err error
-		// For now, we'll skip loading config since we don't have a LoadConfig function yet
-		// This can be added when needed
-		_ = err
+		config, err := LoadConfig(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("loading config: %w", err)
+		}
+		wd.Config = config
 	}
 
 	// Load posts
@@ -148,6 +172,12 @@ func LoadWorkspace(dir string) (*WorkspaceData, error) {
 
 // SaveWorkspaceData saves updated data back to workspace
 func SaveWorkspaceData(wd *WorkspaceData) error {
+	if !wd.Config.CreatedAt.IsZero() {
+		if err := SaveConfig(filepath.Join(wd.Dir, "config.json"), wd.Config); err != nil {
+			return fmt.Errorf("saving config: %w", err)
+		}
+	}
+
 	if err := SavePosts(filepath.Join(wd.Dir, "posts.json"), wd.Posts); err != nil {
 		return fmt.Errorf("saving posts: %w", err)
 	}

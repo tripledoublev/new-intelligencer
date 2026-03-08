@@ -108,8 +108,9 @@ var initCmd = &cobra.Command{
 		}
 
 		// Save config
-		configData, _ := json.MarshalIndent(config, "", "  ")
-		os.WriteFile(filepath.Join(dirName, "config.json"), configData, 0644)
+		if err := SaveConfig(filepath.Join(dirName, "config.json"), config); err != nil {
+			return fmt.Errorf("saving config: %w", err)
+		}
 
 		// Save empty data files
 		SavePosts(filepath.Join(dirName, "posts.json"), []Post{})
@@ -135,7 +136,12 @@ var fetchCmd = &cobra.Command{
 			return err
 		}
 
-		// Load config
+		// Load config and credentials
+		wd, err := LoadWorkspace(dir)
+		if err != nil {
+			return err
+		}
+
 		var envCfg EnvConfig
 		if err := envconfig.Process("", &envCfg); err != nil {
 			return fmt.Errorf("loading credentials from environment: %w", err)
@@ -150,7 +156,10 @@ var fetchCmd = &cobra.Command{
 
 		// Fetch posts
 		fmt.Println("Fetching posts...")
-		since := time.Now().Add(-24 * time.Hour) // TODO: Load from config
+		since := wd.Config.TimeRange.Since
+		if since.IsZero() {
+			since = time.Now().Add(-24 * time.Hour)
+		}
 		result, err := FetchPosts(client, since, limit)
 		if err != nil {
 			return err
@@ -188,25 +197,7 @@ var readPostsCmd = &cobra.Command{
 		}
 		wd.BuildThreadGraph()
 
-		// Build set of rkeys that are replies to posts we have
-		repliesInDataset := make(map[string]bool)
-		for _, post := range wd.Posts {
-			if post.ReplyTo != nil {
-				parentRkey := extractRkeyFromURI(post.ReplyTo.URI)
-				// Check if parent is in our dataset
-				if _, ok := wd.Index[parentRkey]; ok {
-					repliesInDataset[post.Rkey] = true
-				}
-			}
-		}
-
-		// Filter to only thread roots (non-replies or replies to posts not in dataset)
-		var roots []Post
-		for _, post := range wd.Posts {
-			if !repliesInDataset[post.Rkey] {
-				roots = append(roots, post)
-			}
-		}
+		roots := wd.GetThreadRoots()
 
 		// Apply offset and limit to roots
 		end := len(roots)
@@ -395,8 +386,10 @@ var showCategoryCmd = &cobra.Command{
 // digest compile
 var compileCmd = &cobra.Command{
 	Use:   "compile",
-	Short: "Generate HTML digest",
+	Short: "Generate the final digest output",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		format, _ := cmd.Flags().GetString("format")
+
 		wd, err := LoadWorkspace(workspaceDir)
 		if err != nil {
 			dir, _ := GetWorkspaceDir()
@@ -406,74 +399,12 @@ var compileCmd = &cobra.Command{
 			}
 		}
 
-		config := Config{CreatedAt: time.Now()} // TODO: Load from file
-
-		// Load newspaper config from workspace's parent directory (project root)
-		newspaperPath := filepath.Join(filepath.Dir(wd.Dir), "newspaper.json")
-		newspaperConfig, err := LoadNewspaperConfig(newspaperPath)
-		if err != nil {
-			return fmt.Errorf("loading %s: %w", newspaperPath, err)
-		}
-
-		// Load workspace-specific data
-		storyGroups, err := LoadStoryGroups(filepath.Join(wd.Dir, "story-groups.json"))
-		if err != nil {
-			return err
-		}
-		contentPicks, err := LoadContentPicks(filepath.Join(wd.Dir, "content-picks.json"))
+		outputPath, err := compileWorkspaceOutput(wd, format)
 		if err != nil {
 			return err
 		}
 
-		// Validate all stories have headline and priority
-		var unprocessed []string
-		for id, story := range storyGroups {
-			if story.Headline == "" || story.Priority == 0 {
-				missing := []string{}
-				if story.Headline == "" {
-					missing = append(missing, "headline")
-				}
-				if story.Priority == 0 {
-					missing = append(missing, "priority")
-				}
-				unprocessed = append(unprocessed, fmt.Sprintf("  %s [%s] (missing: %s)", id, story.SectionID, joinStrings(missing, ", ")))
-			}
-		}
-		if len(unprocessed) > 0 {
-			sort.Strings(unprocessed)
-			return fmt.Errorf("compile blocked: %d stories are unprocessed\n%s\n\nRun `./bin/digest show-unprocessed` for details",
-				len(unprocessed), joinStrings(unprocessed, "\n"))
-		}
-
-		// Validate front page: exactly one headline, and it must not be opinion
-		var frontPageHeadlines []string
-		for id := range storyGroups {
-			story := storyGroups[id]
-			if story.SectionID == "front-page" && story.Role == "headline" {
-				frontPageHeadlines = append(frontPageHeadlines, fmt.Sprintf("%s: %s", id, story.Headline))
-				if story.IsOpinion {
-					return fmt.Errorf("front page headline cannot be an opinion piece: %s", id)
-				}
-			}
-		}
-		if len(frontPageHeadlines) > 1 {
-			return fmt.Errorf("multiple front-page headlines found (only one allowed):\n  - %s",
-				joinStrings(frontPageHeadlines, "\n  - "))
-		}
-
-		// Generate HTML digest
-		htmlContent, err := CompileDigestHTML(wd.Posts, wd.Categories, storyGroups, newspaperConfig, contentPicks, config)
-		if err != nil {
-			return err
-		}
-
-		// Write HTML
-		htmlOutput := filepath.Join(wd.Dir, "digest.html")
-		if err := os.WriteFile(htmlOutput, []byte(htmlContent), 0644); err != nil {
-			return err
-		}
-		fmt.Printf("Compiled HTML digest to %s\n", htmlOutput)
-
+		fmt.Printf("Compiled %s digest to %s\n", format, outputPath)
 		return nil
 	},
 }
@@ -514,7 +445,7 @@ func isStageComplete(stage string, wd *WorkspaceData, bp *BatchProgress) bool {
 	}
 	switch stage {
 	case "categorization":
-		expected := (len(wd.Posts) + 99) / 100 // ceil(posts/100)
+		expected := (categorizationUnitCount(wd) + 99) / 100
 		return len(bp.Categorization) >= expected
 	case "consolidation":
 		sections := getSectionsWithPosts(wd.Categories)
@@ -566,7 +497,7 @@ func getStageProgress(stage string, wd *WorkspaceData, bp *BatchProgress) string
 	}
 	switch stage {
 	case "categorization":
-		expected := (len(wd.Posts) + 99) / 100
+		expected := (categorizationUnitCount(wd) + 99) / 100
 		completed := len(bp.Categorization)
 		return fmt.Sprintf("%d/%d batches complete", completed, expected)
 	case "consolidation":
@@ -669,7 +600,7 @@ var statusCmd = &cobra.Command{
 		bp, _ := loadBatchProgress(wd.Dir)
 		if bp != nil {
 			// Categorization progress
-			expectedCatBatches := (len(wd.Posts) + 99) / 100 // ceil(posts/100)
+			expectedCatBatches := (categorizationUnitCount(wd) + 99) / 100
 			completedCatBatches := len(bp.Categorization)
 			if completedCatBatches > 0 || expectedCatBatches > 0 {
 				if completedCatBatches >= expectedCatBatches {
@@ -774,6 +705,12 @@ var statusCmd = &cobra.Command{
 				totalPosts := count + len(catData.Hidden)
 				fmt.Printf("  [hidden] %s: %d posts\n", cat, totalPosts)
 			}
+		}
+
+		quarantinedRoots, err := loadQuarantinedRoots(wd.Dir)
+		if err == nil && len(quarantinedRoots) > 0 {
+			fmt.Printf("\nQuarantined roots: %d\n", len(quarantinedRoots))
+			fmt.Printf("  %s\n", filepath.Join(wd.Dir, quarantinedRootsFilename))
 		}
 
 		return nil
@@ -883,14 +820,6 @@ var moveStoryCmd = &cobra.Command{
 			return err
 		}
 
-		// Use file lock to prevent race conditions
-		lockPath := filepath.Join(dir, "categories.lock")
-		fileLock := flock.New(lockPath)
-		if err := fileLock.Lock(); err != nil {
-			return fmt.Errorf("acquiring lock: %w", err)
-		}
-		defer fileLock.Unlock()
-
 		// Load story groups
 		storyGroups, err := LoadStoryGroups(filepath.Join(dir, "story-groups.json"))
 		if err != nil {
@@ -906,35 +835,7 @@ var moveStoryCmd = &cobra.Command{
 		if fromSection == toSection {
 			return fmt.Errorf("story is already in section '%s'", toSection)
 		}
-
-		// Load categories to move posts
-		cats, err := LoadCategories(filepath.Join(dir, "categories.json"))
-		if err != nil {
-			return err
-		}
-
-		// Move all posts from source to destination section
-		for _, rkey := range story.PostRkeys {
-			removeFromCategory(rkey, cats)
-		}
-
-		// Add to destination section
-		destCat := cats[toSection]
-		destCat.Visible = append(destCat.Visible, story.PostRkeys...)
-		cats[toSection] = destCat
-
-		// Update story
-		if story.OriginalSection == "" {
-			story.OriginalSection = fromSection
-		}
-		story.SectionID = toSection
-		storyGroups[storyID] = story
-
-		// Save both
-		if err := SaveCategories(filepath.Join(dir, "categories.json"), cats); err != nil {
-			return err
-		}
-		if err := SaveStoryGroups(filepath.Join(dir, "story-groups.json"), storyGroups); err != nil {
+		if err := moveStoryBetweenSectionsInDir(dir, storyID, toSection); err != nil {
 			return err
 		}
 
@@ -1733,6 +1634,9 @@ func init() {
 
 	// categorize flags
 	categorizeCmd.Flags().Bool("move", false, "Move posts from existing category (for front-page selection)")
+
+	// compile flags
+	compileCmd.Flags().String("format", "html", "Output format (html|markdown)")
 
 	// list-categories flags
 	listCategoriesCmd.Flags().Bool("with-counts", true, "Show post counts")

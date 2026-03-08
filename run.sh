@@ -4,6 +4,14 @@ set -e
 # Source credentials
 source ./env.sh
 
+MODE="${DIGEST_MODE:-claude}"
+
+if [ "$MODE" = "ollama" ]; then
+    OUTPUT_FORMAT="${DIGEST_OUTPUT_FORMAT:-markdown}"
+    make build
+    exec ./bin/digest overnight --provider ollama --output "$OUTPUT_FORMAT" "$@"
+fi
+
 # Find Claude Code command
 if [ -n "$CLAUDE_CMD" ]; then
     # User override
