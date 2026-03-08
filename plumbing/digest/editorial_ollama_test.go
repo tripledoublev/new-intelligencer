@@ -73,6 +73,45 @@ func TestOllamaClientChatJSON_WritesTraceFile(t *testing.T) {
 	assert.NotEmpty(t, trace.ParsedResponse)
 }
 
+func TestOllamaClientChatJSON_SendsBasicAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		require.True(t, ok)
+		assert.Equal(t, "alice", username)
+		assert.Equal(t, "secret", password)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`{
+			"message": {
+				"content": "{\"assignments\":[{\"rkey\":\"abc123\",\"section_id\":\"tech\"}]}"
+			}
+		}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	client := &OllamaClient{
+		host:       server.URL,
+		model:      "test-model",
+		username:   "alice",
+		password:   "secret",
+		httpClient: server.Client(),
+		traceDir:   t.TempDir(),
+	}
+
+	var out EditorialCategorization
+	err := client.ChatJSON(
+		context.Background(),
+		"categorize batch 0 10",
+		"system prompt",
+		"user prompt",
+		categorizationSchema(),
+		&out,
+	)
+	require.NoError(t, err)
+	require.Len(t, out.Assignments, 1)
+}
+
 func TestOllamaClientChatJSON_ReportsThinkingWithoutContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

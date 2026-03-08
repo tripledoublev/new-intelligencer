@@ -11,6 +11,11 @@ if [ -f "./.env" ]; then
     set +a
 fi
 
+# Optional for remote Ollama endpoints:
+#   OLLAMA_HOST=https://ollama.example.com
+#   OLLAMA_USERNAME=your-username
+#   OLLAMA_PASSWORD=your-password
+
 if [ -z "$BSKY_HANDLE" ] && command -v security >/dev/null 2>&1; then
     export BSKY_HANDLE=$(security find-generic-password -s "bsky-agent" -a "handle" -w 2>/dev/null)
 fi

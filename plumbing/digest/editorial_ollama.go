@@ -88,6 +88,8 @@ type OllamaEnvConfig struct {
 	Host           string `envconfig:"OLLAMA_HOST" default:"http://127.0.0.1:11434"`
 	Model          string `envconfig:"OLLAMA_MODEL" default:"llama3.1:8b"`
 	TimeoutSeconds int    `envconfig:"OLLAMA_TIMEOUT_SECONDS" default:"1800"`
+	Username       string `envconfig:"OLLAMA_USERNAME"`
+	Password       string `envconfig:"OLLAMA_PASSWORD"`
 }
 
 type OllamaEditorialEngine struct {
@@ -97,6 +99,8 @@ type OllamaEditorialEngine struct {
 type OllamaClient struct {
 	host       string
 	model      string
+	username   string
+	password   string
 	httpClient *http.Client
 	traceDir   string
 	mu         sync.Mutex
@@ -153,8 +157,10 @@ func LoadOllamaConfig() (OllamaEnvConfig, error) {
 func NewOllamaEditorialEngine(cfg OllamaEnvConfig, traceDir string) *OllamaEditorialEngine {
 	return &OllamaEditorialEngine{
 		client: &OllamaClient{
-			host:  strings.TrimRight(cfg.Host, "/"),
-			model: cfg.Model,
+			host:     strings.TrimRight(cfg.Host, "/"),
+			model:    cfg.Model,
+			username: cfg.Username,
+			password: cfg.Password,
 			httpClient: &http.Client{
 				Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
 			},
@@ -267,6 +273,9 @@ func (c *OllamaClient) chatJSONOnce(ctx context.Context, traceLabel, systemPromp
 		return fmt.Errorf("creating ollama request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.username != "" || c.password != "" {
+		req.SetBasicAuth(c.username, c.password)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

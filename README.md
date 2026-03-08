@@ -112,6 +112,22 @@ If your local model is extremely slow, raise the per-request timeout:
 ./bin/digest overnight --provider ollama --output markdown --ollama-timeout-seconds 1800
 ```
 
+For a remote Ollama endpoint behind HTTP Basic Auth, set credentials in `.env`:
+
+```bash
+OLLAMA_HOST=https://ollama.example.com
+OLLAMA_USERNAME=your-username
+OLLAMA_PASSWORD=your-password
+```
+
+Or override them for one run:
+
+```bash
+./bin/digest overnight --provider ollama --output markdown \
+  --ollama-username your-username \
+  --ollama-password your-password
+```
+
 ### CLI Commands
 
 ```bash

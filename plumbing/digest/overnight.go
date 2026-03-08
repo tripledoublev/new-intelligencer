@@ -26,6 +26,8 @@ var overnightCmd = &cobra.Command{
 		limit, _ := cmd.Flags().GetInt("limit")
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
 		modelOverride, _ := cmd.Flags().GetString("model")
+		ollamaUsernameOverride, _ := cmd.Flags().GetString("ollama-username")
+		ollamaPasswordOverride, _ := cmd.Flags().GetString("ollama-password")
 		allowFallbacks, _ := cmd.Flags().GetBool("allow-fallbacks")
 		timeoutOverride, _ := cmd.Flags().GetInt("ollama-timeout-seconds")
 
@@ -48,6 +50,12 @@ var overnightCmd = &cobra.Command{
 		}
 		if modelOverride != "" {
 			ollamaCfg.Model = modelOverride
+		}
+		if cmd.Flags().Changed("ollama-username") {
+			ollamaCfg.Username = ollamaUsernameOverride
+		}
+		if cmd.Flags().Changed("ollama-password") {
+			ollamaCfg.Password = ollamaPasswordOverride
 		}
 		if timeoutOverride > 0 {
 			ollamaCfg.TimeoutSeconds = timeoutOverride
@@ -975,6 +983,8 @@ func init() {
 	overnightCmd.Flags().Int("limit", 0, "Max posts to fetch (0 = unlimited)")
 	overnightCmd.Flags().Int("batch-size", 40, "Categorization batch size for the local pipeline")
 	overnightCmd.Flags().String("model", "", "Override OLLAMA_MODEL for this run")
+	overnightCmd.Flags().String("ollama-username", "", "Override OLLAMA_USERNAME for this run")
+	overnightCmd.Flags().String("ollama-password", "", "Override OLLAMA_PASSWORD for this run")
 	overnightCmd.Flags().Int("ollama-timeout-seconds", 0, "Override OLLAMA_TIMEOUT_SECONDS for this run")
 	overnightCmd.Flags().Bool("allow-fallbacks", false, "Allow heuristic fallbacks when an Ollama call fails or times out")
 }
