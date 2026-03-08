@@ -15,6 +15,8 @@ import (
 
 const maxCategorizationPromptChars = 30000
 const maxConsolidationPromptChars = 24000
+const maxFrontPagePromptChars = 20000
+const maxHeadlinesPromptChars = 22000
 
 var overnightCmd = &cobra.Command{
 	Use:   "overnight",
@@ -26,6 +28,10 @@ var overnightCmd = &cobra.Command{
 		limit, _ := cmd.Flags().GetInt("limit")
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
 		modelOverride, _ := cmd.Flags().GetString("model")
+		categorizationModelOverride, _ := cmd.Flags().GetString("categorization-model")
+		consolidationModelOverride, _ := cmd.Flags().GetString("consolidation-model")
+		frontPageModelOverride, _ := cmd.Flags().GetString("front-page-model")
+		headlinesModelOverride, _ := cmd.Flags().GetString("headlines-model")
 		ollamaUsernameOverride, _ := cmd.Flags().GetString("ollama-username")
 		ollamaPasswordOverride, _ := cmd.Flags().GetString("ollama-password")
 		allowFallbacks, _ := cmd.Flags().GetBool("allow-fallbacks")
@@ -60,14 +66,22 @@ var overnightCmd = &cobra.Command{
 		if timeoutOverride > 0 {
 			ollamaCfg.TimeoutSeconds = timeoutOverride
 		}
+		categorizationModel := resolveStageModel(ollamaCfg.Model, ollamaCfg.CategorizationModel, categorizationModelOverride)
+		consolidationModel := resolveStageModel(ollamaCfg.Model, ollamaCfg.ConsolidationModel, consolidationModelOverride)
+		frontPageModel := resolveStageModel(ollamaCfg.Model, ollamaCfg.FrontPageModel, frontPageModelOverride)
+		headlinesModel := resolveStageModel(ollamaCfg.Model, ollamaCfg.HeadlinesModel, headlinesModelOverride)
 		if !cmd.Flags().Changed("batch-size") {
-			batchSize = suggestedCategorizationBatchSize(ollamaCfg.Model)
+			batchSize = suggestedCategorizationBatchSize(categorizationModel)
 		}
 
 		dir, err := ensureOvernightWorkspace(since, PipelineSettings{
-			Provider:     provider,
-			OutputFormat: outputFormat,
-			Model:        ollamaCfg.Model,
+			Provider:            provider,
+			OutputFormat:        outputFormat,
+			Model:               ollamaCfg.Model,
+			CategorizationModel: categorizationModel,
+			ConsolidationModel:  consolidationModel,
+			FrontPageModel:      frontPageModel,
+			HeadlinesModel:      headlinesModel,
 		})
 		if err != nil {
 			return err
@@ -78,15 +92,26 @@ var overnightCmd = &cobra.Command{
 			return err
 		}
 
+		traceDir := filepath.Join(dir, "ollama-traces")
+		defaultEngine, engineForModel := buildOllamaEngines(ollamaCfg, traceDir)
+
 		runner := OvernightRunner{
-			Dir:             dir,
-			Engine:          NewOllamaEditorialEngine(ollamaCfg, filepath.Join(dir, "ollama-traces")),
-			NewspaperConfig: newspaperConfig,
-			BatchSize:       batchSize,
-			FetchLimit:      limit,
-			OutputFormat:    outputFormat,
-			AllowFallbacks:  allowFallbacks,
-			Model:           ollamaCfg.Model,
+			Dir:                  dir,
+			Engine:               defaultEngine,
+			CategorizationEngine: engineForModel(categorizationModel),
+			ConsolidationEngine:  engineForModel(consolidationModel),
+			FrontPageEngine:      engineForModel(frontPageModel),
+			HeadlinesEngine:      engineForModel(headlinesModel),
+			NewspaperConfig:      newspaperConfig,
+			BatchSize:            batchSize,
+			FetchLimit:           limit,
+			OutputFormat:         outputFormat,
+			AllowFallbacks:       allowFallbacks,
+			Model:                ollamaCfg.Model,
+			CategorizationModel:  categorizationModel,
+			ConsolidationModel:   consolidationModel,
+			FrontPageModel:       frontPageModel,
+			HeadlinesModel:       headlinesModel,
 		}
 
 		outputPath, err := runner.Run(cmd.Context())
@@ -100,15 +125,114 @@ var overnightCmd = &cobra.Command{
 }
 
 type OvernightRunner struct {
-	Dir                    string
-	Engine                 LocalEditorialEngine
-	NewspaperConfig        NewspaperConfig
-	BatchSize              int
-	ConsolidationBatchSize int
-	FetchLimit             int
-	OutputFormat           string
-	AllowFallbacks         bool
-	Model                  string
+	Dir                     string
+	Engine                  LocalEditorialEngine
+	CategorizationEngine    LocalEditorialEngine
+	ConsolidationEngine     LocalEditorialEngine
+	FrontPageEngine         LocalEditorialEngine
+	HeadlinesEngine         LocalEditorialEngine
+	NewspaperConfig         NewspaperConfig
+	BatchSize               int
+	ConsolidationBatchSize  int
+	FrontPageCandidateLimit int
+	HeadlineBatchSize       int
+	FetchLimit              int
+	OutputFormat            string
+	AllowFallbacks          bool
+	Model                   string
+	CategorizationModel     string
+	ConsolidationModel      string
+	FrontPageModel          string
+	HeadlinesModel          string
+}
+
+func resolveStageModel(defaultModel, envOverride, flagOverride string) string {
+	if strings.TrimSpace(flagOverride) != "" {
+		return strings.TrimSpace(flagOverride)
+	}
+	if strings.TrimSpace(envOverride) != "" {
+		return strings.TrimSpace(envOverride)
+	}
+	return strings.TrimSpace(defaultModel)
+}
+
+func buildOllamaEngines(cfg OllamaEnvConfig, traceDir string) (LocalEditorialEngine, func(string) LocalEditorialEngine) {
+	defaultEngine := NewOllamaEditorialEngine(cfg, traceDir)
+	cache := map[string]LocalEditorialEngine{
+		strings.TrimSpace(cfg.Model): defaultEngine,
+	}
+
+	return defaultEngine, func(model string) LocalEditorialEngine {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return defaultEngine
+		}
+		if engine, ok := cache[model]; ok {
+			return engine
+		}
+
+		overrideCfg := cfg
+		overrideCfg.Model = model
+		engine := NewOllamaEditorialEngine(overrideCfg, filepath.Join(traceDir, sanitizeTraceLabel(model)))
+		cache[model] = engine
+		return engine
+	}
+}
+
+func (r *OvernightRunner) categorizationModelName() string {
+	if strings.TrimSpace(r.CategorizationModel) != "" {
+		return strings.TrimSpace(r.CategorizationModel)
+	}
+	return strings.TrimSpace(r.Model)
+}
+
+func (r *OvernightRunner) consolidationModelName() string {
+	if strings.TrimSpace(r.ConsolidationModel) != "" {
+		return strings.TrimSpace(r.ConsolidationModel)
+	}
+	return strings.TrimSpace(r.Model)
+}
+
+func (r *OvernightRunner) frontPageModelName() string {
+	if strings.TrimSpace(r.FrontPageModel) != "" {
+		return strings.TrimSpace(r.FrontPageModel)
+	}
+	return strings.TrimSpace(r.Model)
+}
+
+func (r *OvernightRunner) headlinesModelName() string {
+	if strings.TrimSpace(r.HeadlinesModel) != "" {
+		return strings.TrimSpace(r.HeadlinesModel)
+	}
+	return strings.TrimSpace(r.Model)
+}
+
+func (r *OvernightRunner) categorizationEngine() LocalEditorialEngine {
+	if r.CategorizationEngine != nil {
+		return r.CategorizationEngine
+	}
+	return r.Engine
+}
+
+func (r *OvernightRunner) consolidationEngine() LocalEditorialEngine {
+	if r.ConsolidationEngine != nil {
+		return r.ConsolidationEngine
+	}
+	return r.Engine
+}
+
+func (r *OvernightRunner) frontPageEngine() LocalEditorialEngine {
+	if r.FrontPageEngine != nil {
+		return r.FrontPageEngine
+	}
+	return r.Engine
+}
+
+func (r *OvernightRunner) headlinesEngine() LocalEditorialEngine {
+	if r.HeadlinesEngine != nil {
+		return r.HeadlinesEngine
+	}
+	return r.Engine
 }
 
 func (r OvernightRunner) Run(ctx context.Context) (string, error) {
@@ -273,15 +397,15 @@ func (r *OvernightRunner) runCategorizationStage(ctx context.Context, wd *Worksp
 
 func (r *OvernightRunner) initializeCategorizationBatchSize() error {
 	if r.BatchSize <= 0 {
-		r.BatchSize = suggestedCategorizationBatchSize(r.Model)
+		r.BatchSize = suggestedCategorizationBatchSize(r.categorizationModelName())
 	}
 
-	learned, err := loadLearnedCategorizationBatchSize(r.Dir, r.Model)
+	learned, err := loadLearnedCategorizationBatchSize(r.Dir, r.categorizationModelName())
 	if err != nil {
 		return err
 	}
 	if learned > 0 && learned < r.BatchSize {
-		fmt.Printf("Using learned categorization batch cap %d for %s\n", learned, r.Model)
+		fmt.Printf("Using learned categorization batch cap %d for %s\n", learned, r.categorizationModelName())
 		r.BatchSize = learned
 	}
 
@@ -298,12 +422,12 @@ func (r *OvernightRunner) lowerCategorizationBatchSize(newCap int) {
 
 	previous := r.BatchSize
 	r.BatchSize = newCap
-	if err := saveLearnedCategorizationBatchSize(r.Dir, r.Model, newCap); err != nil {
-		fmt.Printf("Warning: failed to persist learned categorization batch cap %d for %s: %v\n", newCap, r.Model, err)
+	if err := saveLearnedCategorizationBatchSize(r.Dir, r.categorizationModelName(), newCap); err != nil {
+		fmt.Printf("Warning: failed to persist learned categorization batch cap %d for %s: %v\n", newCap, r.categorizationModelName(), err)
 		return
 	}
 
-	fmt.Printf("Lowering categorization batch cap to %d for %s (was %d)\n", newCap, r.Model, previous)
+	fmt.Printf("Lowering categorization batch cap to %d for %s (was %d)\n", newCap, r.categorizationModelName(), previous)
 }
 
 func (r *OvernightRunner) categorizeBatchRange(ctx context.Context, wd *WorkspaceData, candidateSections []NewspaperSection, roots []Post, offset, limit int) error {
@@ -339,8 +463,8 @@ func (r *OvernightRunner) categorizeBatchRange(ctx context.Context, wd *Workspac
 		)
 	}
 
-	fmt.Printf("Categorizing batch %d-%d with %s (%d roots)\n", offset, offset+limit, r.Model, len(batch))
-	resp, err := r.Engine.Categorize(ctx, traceLabel, candidateSections, display)
+	fmt.Printf("Categorizing batch %d-%d with %s (%d roots)\n", offset, offset+limit, r.categorizationModelName(), len(batch))
+	resp, err := r.categorizationEngine().Categorize(ctx, traceLabel, candidateSections, display)
 	if err != nil {
 		if limit > 1 && shouldSplitCategorizationBatch(err) {
 			leftLimit := limit / 2
@@ -427,7 +551,7 @@ func (r *OvernightRunner) runConsolidationStage(ctx context.Context, wd *Workspa
 		}
 
 		posts := postsForRkeys(wd, catData.Visible)
-		fmt.Printf("Consolidating %s with %s (%d posts)\n", section.ID, r.Model, len(posts))
+		fmt.Printf("Consolidating %s with %s (%d posts)\n", section.ID, r.consolidationModelName(), len(posts))
 		drafts, err := r.consolidateSectionDrafts(ctx, section, posts, "consolidate-"+section.ID)
 		if err != nil {
 			return err
@@ -492,7 +616,7 @@ func (r *OvernightRunner) consolidateSectionDrafts(ctx context.Context, section 
 		return append(left, right...), nil
 	}
 
-	resp, err := r.Engine.Consolidate(ctx, traceLabel, section, display)
+	resp, err := r.consolidationEngine().Consolidate(ctx, traceLabel, section, display)
 	if err != nil {
 		if len(posts) > 1 && shouldSplitCategorizationBatch(err) {
 			mid := len(posts) / 2
@@ -523,15 +647,15 @@ func (r *OvernightRunner) consolidateSectionDrafts(ctx context.Context, section 
 
 func (r *OvernightRunner) initializeConsolidationBatchSize() error {
 	if r.ConsolidationBatchSize <= 0 {
-		r.ConsolidationBatchSize = suggestedConsolidationBatchSize(r.Model)
+		r.ConsolidationBatchSize = suggestedConsolidationBatchSize(r.consolidationModelName())
 	}
 
-	learned, err := loadLearnedConsolidationBatchSize(r.Dir, r.Model)
+	learned, err := loadLearnedConsolidationBatchSize(r.Dir, r.consolidationModelName())
 	if err != nil {
 		return err
 	}
 	if learned > 0 && (r.ConsolidationBatchSize == 0 || learned < r.ConsolidationBatchSize) {
-		fmt.Printf("Using learned consolidation batch cap %d for %s\n", learned, r.Model)
+		fmt.Printf("Using learned consolidation batch cap %d for %s\n", learned, r.consolidationModelName())
 		r.ConsolidationBatchSize = learned
 	}
 
@@ -548,19 +672,19 @@ func (r *OvernightRunner) lowerConsolidationBatchSize(newCap int) {
 
 	previous := r.ConsolidationBatchSize
 	r.ConsolidationBatchSize = newCap
-	if err := saveLearnedConsolidationBatchSize(r.Dir, r.Model, newCap); err != nil {
-		fmt.Printf("Warning: failed to persist learned consolidation batch cap %d for %s: %v\n", newCap, r.Model, err)
+	if err := saveLearnedConsolidationBatchSize(r.Dir, r.consolidationModelName(), newCap); err != nil {
+		fmt.Printf("Warning: failed to persist learned consolidation batch cap %d for %s: %v\n", newCap, r.consolidationModelName(), err)
 		return
 	}
 
 	if previous > 0 {
-		fmt.Printf("Lowering consolidation batch cap to %d for %s (was %d)\n", newCap, r.Model, previous)
+		fmt.Printf("Lowering consolidation batch cap to %d for %s (was %d)\n", newCap, r.consolidationModelName(), previous)
 		return
 	}
-	fmt.Printf("Setting consolidation batch cap to %d for %s\n", newCap, r.Model)
+	fmt.Printf("Setting consolidation batch cap to %d for %s\n", newCap, r.consolidationModelName())
 }
 
-func (r OvernightRunner) runFrontPageStage(ctx context.Context, wd *WorkspaceData) error {
+func (r *OvernightRunner) runFrontPageStage(ctx context.Context, wd *WorkspaceData) error {
 	bp, _ := loadBatchProgress(r.Dir)
 	if bp.FrontPage {
 		return nil
@@ -584,8 +708,8 @@ func (r OvernightRunner) runFrontPageStage(ctx context.Context, wd *WorkspaceDat
 		}
 	}
 
-	fmt.Printf("Selecting front page with %s (%d candidate stories)\n", r.Model, len(candidates))
-	resp, err := r.Engine.SelectFrontPage(ctx, "front-page-selection", maxStories, candidates)
+	fmt.Printf("Selecting front page with %s (%d candidate stories)\n", r.frontPageModelName(), len(candidates))
+	resp, err := r.selectFrontPageCandidates(ctx, maxStories, candidates)
 	if err != nil {
 		if !r.AllowFallbacks {
 			return err
@@ -602,7 +726,7 @@ func (r OvernightRunner) runFrontPageStage(ctx context.Context, wd *WorkspaceDat
 	return markBatchDoneInDir(r.Dir, "front-page", 0, 0, "")
 }
 
-func (r OvernightRunner) runHeadlineStage(ctx context.Context, wd *WorkspaceData) error {
+func (r *OvernightRunner) runHeadlineStage(ctx context.Context, wd *WorkspaceData) error {
 	bp, _ := loadBatchProgress(r.Dir)
 	storyGroups, err := LoadStoryGroups(filepath.Join(r.Dir, "story-groups.json"))
 	if err != nil {
@@ -619,8 +743,8 @@ func (r OvernightRunner) runHeadlineStage(ctx context.Context, wd *WorkspaceData
 			continue
 		}
 
-		fmt.Printf("Writing headlines for %s with %s (%d stories)\n", section.ID, r.Model, len(candidates))
-		resp, err := r.Engine.WriteHeadlines(ctx, "headlines-"+section.ID, section, candidates)
+		fmt.Printf("Writing headlines for %s with %s (%d stories)\n", section.ID, r.headlinesModelName(), len(candidates))
+		resp, err := r.writeHeadlinePlan(ctx, section, candidates, "headlines-"+section.ID)
 		if err != nil {
 			if !r.AllowFallbacks {
 				return err
@@ -640,6 +764,206 @@ func (r OvernightRunner) runHeadlineStage(ctx context.Context, wd *WorkspaceData
 	}
 
 	return nil
+}
+
+func (r *OvernightRunner) initializeFrontPageCandidateLimit() {
+	if r.FrontPageCandidateLimit > 0 {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(r.frontPageModelName())) {
+	case "qwen3.5:2b":
+		r.FrontPageCandidateLimit = 24
+	}
+}
+
+func (r *OvernightRunner) lowerFrontPageCandidateLimit(newCap int, maxStories int) {
+	if newCap < maxStories {
+		newCap = maxStories
+	}
+	if r.FrontPageCandidateLimit > 0 && newCap >= r.FrontPageCandidateLimit {
+		return
+	}
+
+	previous := r.FrontPageCandidateLimit
+	r.FrontPageCandidateLimit = newCap
+	if previous > 0 {
+		fmt.Printf("Lowering front-page candidate cap to %d for %s (was %d)\n", newCap, r.frontPageModelName(), previous)
+		return
+	}
+	fmt.Printf("Setting front-page candidate cap to %d for %s\n", newCap, r.frontPageModelName())
+}
+
+func (r *OvernightRunner) selectFrontPageCandidates(ctx context.Context, maxStories int, candidates []FrontPageCandidate) (EditorialFrontPageSelection, error) {
+	r.initializeFrontPageCandidateLimit()
+
+	shortlisted := shortlistFrontPageCandidates(candidates, r.FrontPageCandidateLimit)
+	promptChars, promptErr := frontPagePromptChars(maxStories, shortlisted)
+	if promptErr == nil && promptChars > maxFrontPagePromptChars && len(shortlisted) > maxStories {
+		newCap := len(shortlisted) / 2
+		r.lowerFrontPageCandidateLimit(newCap, maxStories)
+		fmt.Printf("Front-page selection exceeds prompt budget (%d chars); retrying with top %d candidates\n",
+			promptChars, r.FrontPageCandidateLimit,
+		)
+		return r.selectFrontPageCandidates(ctx, maxStories, candidates)
+	}
+
+	resp, err := r.frontPageEngine().SelectFrontPage(ctx, "front-page-selection", maxStories, shortlisted)
+	if err != nil {
+		if len(shortlisted) > maxStories && shouldSplitCategorizationBatch(err) {
+			newCap := len(shortlisted) / 2
+			r.lowerFrontPageCandidateLimit(newCap, maxStories)
+			fmt.Printf("Front-page selection failed; retrying with top %d candidates: %v\n",
+				r.FrontPageCandidateLimit, err,
+			)
+			return r.selectFrontPageCandidates(ctx, maxStories, candidates)
+		}
+		return EditorialFrontPageSelection{}, err
+	}
+
+	return normalizeFrontPageSelection(shortlisted, maxStories, resp), nil
+}
+
+func shortlistFrontPageCandidates(candidates []FrontPageCandidate, limit int) []FrontPageCandidate {
+	if limit <= 0 || len(candidates) <= limit {
+		out := make([]FrontPageCandidate, len(candidates))
+		copy(out, candidates)
+		return out
+	}
+
+	var shortlisted []FrontPageCandidate
+	selected := make(map[string]bool, limit)
+	seenSections := make(map[string]bool)
+
+	for _, candidate := range candidates {
+		if seenSections[candidate.SectionID] {
+			continue
+		}
+		shortlisted = append(shortlisted, candidate)
+		selected[candidate.StoryID] = true
+		seenSections[candidate.SectionID] = true
+		if len(shortlisted) >= limit {
+			return shortlisted
+		}
+	}
+
+	for _, candidate := range candidates {
+		if selected[candidate.StoryID] {
+			continue
+		}
+		shortlisted = append(shortlisted, candidate)
+		if len(shortlisted) >= limit {
+			break
+		}
+	}
+
+	return shortlisted
+}
+
+func (r *OvernightRunner) initializeHeadlineBatchSize() {
+	if r.HeadlineBatchSize > 0 {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(r.headlinesModelName())) {
+	case "qwen3.5:2b":
+		r.HeadlineBatchSize = 8
+	}
+}
+
+func (r *OvernightRunner) lowerHeadlineBatchSize(newCap int) {
+	if newCap <= 0 {
+		newCap = 1
+	}
+	if r.HeadlineBatchSize > 0 && newCap >= r.HeadlineBatchSize {
+		return
+	}
+
+	previous := r.HeadlineBatchSize
+	r.HeadlineBatchSize = newCap
+	if previous > 0 {
+		fmt.Printf("Lowering headline batch cap to %d for %s (was %d)\n", newCap, r.headlinesModelName(), previous)
+		return
+	}
+	fmt.Printf("Setting headline batch cap to %d for %s\n", newCap, r.headlinesModelName())
+}
+
+func (r *OvernightRunner) writeHeadlinePlan(ctx context.Context, section NewspaperSection, candidates []HeadlineCandidate, traceLabel string) (EditorialHeadlinePlan, error) {
+	r.initializeHeadlineBatchSize()
+
+	if r.HeadlineBatchSize > 0 && len(candidates) > r.HeadlineBatchSize {
+		fmt.Printf("Headlines %s exceed learned batch cap (%d stories); chunking %d stories into <=%d-story batches\n",
+			section.ID, r.HeadlineBatchSize, len(candidates), r.HeadlineBatchSize,
+		)
+		var revisions []EditorialStoryRevision
+		for start := 0; start < len(candidates); {
+			end := min(start+r.HeadlineBatchSize, len(candidates))
+			part, err := r.writeHeadlinePlan(
+				ctx,
+				section,
+				candidates[start:end],
+				fmt.Sprintf("%s-part-%04d-%04d", traceLabel, start, end),
+			)
+			if err != nil {
+				return EditorialHeadlinePlan{}, err
+			}
+			revisions = append(revisions, part.Stories...)
+			start = end
+		}
+		return normalizeMergedHeadlinePlan(section, candidates, revisions), nil
+	}
+
+	promptChars, promptErr := headlinesPromptChars(section, candidates)
+	if promptErr == nil && promptChars > maxHeadlinesPromptChars && len(candidates) > 1 {
+		r.lowerHeadlineBatchSize(len(candidates) / 2)
+		fmt.Printf("Headlines %s exceed prompt budget (%d chars); retrying in smaller batches\n",
+			section.ID, promptChars,
+		)
+		return r.writeHeadlinePlan(ctx, section, candidates, traceLabel)
+	}
+
+	resp, err := r.headlinesEngine().WriteHeadlines(ctx, traceLabel, section, candidates)
+	if err != nil {
+		if len(candidates) > 1 && shouldSplitCategorizationBatch(err) {
+			r.lowerHeadlineBatchSize(len(candidates) / 2)
+			fmt.Printf("Headlines %s failed; retrying in smaller batches: %v\n", section.ID, err)
+			return r.writeHeadlinePlan(ctx, section, candidates, traceLabel)
+		}
+		return EditorialHeadlinePlan{}, err
+	}
+
+	return normalizeHeadlinePlan(section, candidates, resp), nil
+}
+
+func normalizeMergedHeadlinePlan(section NewspaperSection, candidates []HeadlineCandidate, revisions []EditorialStoryRevision) EditorialHeadlinePlan {
+	byID := make(map[string]EditorialStoryRevision, len(revisions))
+	for _, revision := range revisions {
+		if _, exists := byID[revision.StoryID]; exists {
+			continue
+		}
+		byID[revision.StoryID] = revision
+	}
+
+	merged := make([]EditorialStoryRevision, 0, len(candidates))
+	for _, candidate := range candidates {
+		revision, ok := byID[candidate.StoryID]
+		if !ok {
+			revision = fallbackHeadlineRevision(section, candidate, len(merged)+1)
+		}
+		if strings.TrimSpace(revision.Headline) == "" {
+			revision.Headline = fallbackHeadlineCandidate(candidate)
+		}
+		if strings.TrimSpace(revision.Summary) == "" {
+			revision.Summary = fallbackSummaryCandidate(candidate)
+		}
+		revision.Priority = len(merged) + 1
+		revision.Role = normalizeStoryRole(revision.Role, revision.IsOpinion)
+		if revision.Role == "opinion" {
+			revision.IsOpinion = true
+		}
+		merged = append(merged, revision)
+	}
+
+	normalizeHeadlineRoles(section, merged)
+	return EditorialHeadlinePlan{Stories: merged}
 }
 
 func categorizationBatchComplete(bp *BatchProgress, offset, limit int) bool {
@@ -701,6 +1025,22 @@ func categorizationPromptChars(sections []NewspaperSection, posts []DisplayPost)
 
 func consolidationPromptChars(section NewspaperSection, posts []DisplayPost) (int, error) {
 	prompt, err := buildConsolidationPrompt(section, posts)
+	if err != nil {
+		return 0, err
+	}
+	return len(prompt), nil
+}
+
+func frontPagePromptChars(maxStories int, candidates []FrontPageCandidate) (int, error) {
+	prompt, err := buildFrontPagePrompt(maxStories, candidates)
+	if err != nil {
+		return 0, err
+	}
+	return len(prompt), nil
+}
+
+func headlinesPromptChars(section NewspaperSection, candidates []HeadlineCandidate) (int, error) {
+	prompt, err := buildHeadlinesPrompt(section, candidates)
 	if err != nil {
 		return 0, err
 	}
@@ -983,6 +1323,10 @@ func init() {
 	overnightCmd.Flags().Int("limit", 0, "Max posts to fetch (0 = unlimited)")
 	overnightCmd.Flags().Int("batch-size", 40, "Categorization batch size for the local pipeline")
 	overnightCmd.Flags().String("model", "", "Override OLLAMA_MODEL for this run")
+	overnightCmd.Flags().String("categorization-model", "", "Override OLLAMA_CATEGORIZATION_MODEL for this run")
+	overnightCmd.Flags().String("consolidation-model", "", "Override OLLAMA_CONSOLIDATION_MODEL for this run")
+	overnightCmd.Flags().String("front-page-model", "", "Override OLLAMA_FRONT_PAGE_MODEL for this run")
+	overnightCmd.Flags().String("headlines-model", "", "Override OLLAMA_HEADLINES_MODEL for this run")
 	overnightCmd.Flags().String("ollama-username", "", "Override OLLAMA_USERNAME for this run")
 	overnightCmd.Flags().String("ollama-password", "", "Override OLLAMA_PASSWORD for this run")
 	overnightCmd.Flags().Int("ollama-timeout-seconds", 0, "Override OLLAMA_TIMEOUT_SECONDS for this run")

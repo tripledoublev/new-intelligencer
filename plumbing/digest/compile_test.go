@@ -46,9 +46,9 @@ func TestSortByLikes(t *testing.T) {
 
 func TestSortByEngagement(t *testing.T) {
 	posts := []Post{
-		{Rkey: "low", ReplyCount: 1, RepostCount: 1},       // engagement = 2
-		{Rkey: "high", ReplyCount: 50, RepostCount: 50},    // engagement = 100
-		{Rkey: "medium", ReplyCount: 10, RepostCount: 15},  // engagement = 25
+		{Rkey: "low", ReplyCount: 1, RepostCount: 1},      // engagement = 2
+		{Rkey: "high", ReplyCount: 50, RepostCount: 50},   // engagement = 100
+		{Rkey: "medium", ReplyCount: 10, RepostCount: 15}, // engagement = 25
 	}
 
 	sorted := sortByEngagement(posts)
@@ -402,6 +402,31 @@ func TestCompileDigestHTML_HandlesEmptyInput(t *testing.T) {
 	assert.NotEmpty(t, result) // Should still have HTML structure
 }
 
+func TestValidateStoryGroupsForCompile_RejectsTruncatedEditorialText(t *testing.T) {
+	storyGroups := StoryGroups{
+		"sg1": {
+			ID:        "sg1",
+			SectionID: "tech",
+			Headline:  "Broken headline...",
+			Summary:   "Fine summary",
+			Priority:  1,
+		},
+		"sg2": {
+			ID:        "sg2",
+			SectionID: "tech",
+			Headline:  "Valid headline",
+			Summary:   "Broken summary...",
+			Priority:  2,
+		},
+	}
+
+	err := validateStoryGroupsForCompile(storyGroups)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "truncated editorial text")
+	assert.Contains(t, err.Error(), "headline ends with ellipsis")
+	assert.Contains(t, err.Error(), "summary ends with ellipsis")
+}
+
 // ============================================
 // Golden File Tests
 // ============================================
@@ -451,4 +476,3 @@ func TestCompileDigestHTML_GoldenFile(t *testing.T) {
 		t.Errorf("Output does not match golden file.\nActual output written to: %s\nRun with -update-golden to update.", actualPath)
 	}
 }
-

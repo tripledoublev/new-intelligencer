@@ -118,12 +118,21 @@ For a remote Ollama endpoint behind HTTP Basic Auth, set credentials in `.env`:
 OLLAMA_HOST=https://ollama.example.com
 OLLAMA_USERNAME=your-username
 OLLAMA_PASSWORD=your-password
+OLLAMA_MODEL=qwen3.5:9b
+OLLAMA_CATEGORIZATION_MODEL=qwen3.5:9b
+OLLAMA_CONSOLIDATION_MODEL=qwen3.5:35b
+OLLAMA_FRONT_PAGE_MODEL=qwen3.5:35b
+OLLAMA_HEADLINES_MODEL=qwen3.5:35b
 ```
 
 Or override them for one run:
 
 ```bash
 ./bin/digest overnight --provider ollama --output markdown \
+  --categorization-model qwen3.5:9b \
+  --consolidation-model qwen3.5:35b \
+  --front-page-model qwen3.5:35b \
+  --headlines-model qwen3.5:35b \
   --ollama-username your-username \
   --ollama-password your-password
 ```

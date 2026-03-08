@@ -16,6 +16,10 @@ type splittingTestEngine struct {
 	failAll              bool
 	consolidateCalls     []int
 	failConsolidateAbove int
+	selectCalls          []int
+	failSelectAbove      int
+	headlineCalls        []int
+	failHeadlineAbove    int
 }
 
 func (e *splittingTestEngine) Categorize(ctx context.Context, traceLabel string, sections []NewspaperSection, posts []DisplayPost) (EditorialCategorization, error) {
@@ -51,11 +55,38 @@ func (e *splittingTestEngine) Consolidate(ctx context.Context, traceLabel string
 }
 
 func (e *splittingTestEngine) SelectFrontPage(ctx context.Context, traceLabel string, maxStories int, candidates []FrontPageCandidate) (EditorialFrontPageSelection, error) {
-	return EditorialFrontPageSelection{}, nil
+	e.selectCalls = append(e.selectCalls, len(candidates))
+	if e.failSelectAbove > 0 && len(candidates) > e.failSelectAbove {
+		return EditorialFrontPageSelection{}, fmt.Errorf("decoding ollama JSON payload: invalid character 'A' looking for beginning of value")
+	}
+
+	var storyIDs []string
+	for _, candidate := range candidates {
+		storyIDs = append(storyIDs, candidate.StoryID)
+		if len(storyIDs) >= maxStories {
+			break
+		}
+	}
+	return EditorialFrontPageSelection{StoryIDs: storyIDs}, nil
 }
 
 func (e *splittingTestEngine) WriteHeadlines(ctx context.Context, traceLabel string, section NewspaperSection, stories []HeadlineCandidate) (EditorialHeadlinePlan, error) {
-	return EditorialHeadlinePlan{}, nil
+	e.headlineCalls = append(e.headlineCalls, len(stories))
+	if e.failHeadlineAbove > 0 && len(stories) > e.failHeadlineAbove {
+		return EditorialHeadlinePlan{}, fmt.Errorf("decoding ollama JSON payload: invalid character 'H' looking for beginning of value")
+	}
+
+	revisions := make([]EditorialStoryRevision, 0, len(stories))
+	for i, story := range stories {
+		revisions = append(revisions, EditorialStoryRevision{
+			StoryID:  story.StoryID,
+			Headline: "Headline " + story.StoryID,
+			Priority: i + 1,
+			Role:     "featured",
+			Summary:  story.Summary,
+		})
+	}
+	return EditorialHeadlinePlan{Stories: revisions}, nil
 }
 
 func TestCategorizationBatchComplete_CoveredBySubBatches(t *testing.T) {
@@ -291,6 +322,17 @@ func TestRunCategorizationStage_UsesLearnedBatchCap(t *testing.T) {
 	assert.Equal(t, []int{2, 2}, engine.categorizeCalls)
 }
 
+func TestInitializeCategorizationBatchSize_UsesCategorizationModelOverride(t *testing.T) {
+	runner := OvernightRunner{
+		Model:               "qwen3.5:35b",
+		CategorizationModel: "qwen3.5:2b",
+	}
+
+	err := runner.initializeCategorizationBatchSize()
+	require.NoError(t, err)
+	assert.Equal(t, 10, runner.BatchSize)
+}
+
 func TestConsolidateSectionDrafts_SplitsFailedSection(t *testing.T) {
 	engine := &splittingTestEngine{failConsolidateAbove: 2}
 	runner := OvernightRunner{
@@ -314,6 +356,17 @@ func TestConsolidateSectionDrafts_SplitsFailedSection(t *testing.T) {
 
 func TestInitializeConsolidationBatchSize_SuggestsQwenDefault(t *testing.T) {
 	runner := OvernightRunner{Model: "qwen3.5:2b"}
+
+	err := runner.initializeConsolidationBatchSize()
+	require.NoError(t, err)
+	assert.Equal(t, 8, runner.ConsolidationBatchSize)
+}
+
+func TestInitializeConsolidationBatchSize_UsesConsolidationModelOverride(t *testing.T) {
+	runner := OvernightRunner{
+		Model:              "qwen3.5:35b",
+		ConsolidationModel: "qwen3.5:2b",
+	}
 
 	err := runner.initializeConsolidationBatchSize()
 	require.NoError(t, err)
@@ -360,4 +413,71 @@ func TestRunConsolidationStage_UsesLearnedBatchCap(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []int{2, 2, 1}, engine.consolidateCalls)
 	assert.Equal(t, 2, runner.ConsolidationBatchSize)
+}
+
+func TestSelectFrontPageCandidates_RetriesWithSmallerCandidateSet(t *testing.T) {
+	engine := &splittingTestEngine{failSelectAbove: 2}
+	runner := OvernightRunner{
+		Engine: engine,
+		Model:  "test-model",
+	}
+
+	candidates := []FrontPageCandidate{
+		{StoryID: "s1", SectionID: "tech", Engagement: 100},
+		{StoryID: "s2", SectionID: "music", Engagement: 90},
+		{StoryID: "s3", SectionID: "literature", Engagement: 80},
+		{StoryID: "s4", SectionID: "finance", Engagement: 70},
+		{StoryID: "s5", SectionID: "politics-us", Engagement: 60},
+	}
+
+	resp, err := runner.selectFrontPageCandidates(context.Background(), 2, candidates)
+	require.NoError(t, err)
+	assert.Equal(t, []int{5, 2}, engine.selectCalls)
+	assert.Equal(t, []string{"s1", "s2"}, resp.StoryIDs)
+	assert.Equal(t, 2, runner.FrontPageCandidateLimit)
+}
+
+func TestWriteHeadlinePlan_ChunksLargeSections(t *testing.T) {
+	engine := &splittingTestEngine{}
+	runner := OvernightRunner{
+		Engine:            engine,
+		Model:             "test-model",
+		HeadlineBatchSize: 2,
+	}
+
+	section := NewspaperSection{ID: "tech-ai", Name: "AI", Type: "news"}
+	candidates := []HeadlineCandidate{
+		{StoryID: "s1", Summary: "one"},
+		{StoryID: "s2", Summary: "two"},
+		{StoryID: "s3", Summary: "three"},
+		{StoryID: "s4", Summary: "four"},
+		{StoryID: "s5", Summary: "five"},
+	}
+
+	plan, err := runner.writeHeadlinePlan(context.Background(), section, candidates, "headlines-tech-ai")
+	require.NoError(t, err)
+	assert.Equal(t, []int{2, 2, 1}, engine.headlineCalls)
+	require.Len(t, plan.Stories, 5)
+	assert.Equal(t, 1, plan.Stories[0].Priority)
+	assert.Equal(t, 5, plan.Stories[4].Priority)
+}
+
+func TestInitializeHeadlineBatchSize_UsesHeadlinesModelOverride(t *testing.T) {
+	runner := OvernightRunner{
+		Model:          "qwen3.5:35b",
+		HeadlinesModel: "qwen3.5:2b",
+	}
+
+	runner.initializeHeadlineBatchSize()
+	assert.Equal(t, 8, runner.HeadlineBatchSize)
+}
+
+func TestInitializeFrontPageCandidateLimit_UsesFrontPageModelOverride(t *testing.T) {
+	runner := OvernightRunner{
+		Model:          "qwen3.5:35b",
+		FrontPageModel: "qwen3.5:2b",
+	}
+
+	runner.initializeFrontPageCandidateLimit()
+	assert.Equal(t, 24, runner.FrontPageCandidateLimit)
 }

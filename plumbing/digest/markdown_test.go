@@ -54,3 +54,34 @@ func TestCompileDigestMarkdown_IncludesFixtureContent(t *testing.T) {
 	assert.Contains(t, result, "- @")
 	assert.True(t, strings.HasSuffix(result, "\n"))
 }
+
+func TestCompileDigestMarkdown_StripsInternalMetadata(t *testing.T) {
+	posts := []Post{{
+		Rkey:      "test1",
+		Text:      "Test post",
+		Author:    Author{Handle: "test.bsky.social"},
+		CreatedAt: time.Now(),
+		Images:    []Image{{URL: "https://example.com/test.jpg"}},
+	}}
+	storyGroups := StoryGroups{
+		"sg1": {
+			ID:          "sg1",
+			SectionID:   "tech",
+			PrimaryRkey: "test1",
+			Headline:    "Test Story",
+			Priority:    4,
+			Role:        "featured",
+			PostRkeys:   []string{"test1"},
+		},
+	}
+	newspaperConfig := NewspaperConfig{
+		Sections: []NewspaperSection{{ID: "tech", Name: "Technology"}},
+	}
+
+	result, err := CompileDigestMarkdown(posts, Categories{}, storyGroups, newspaperConfig, AllContentPicks{}, Config{CreatedAt: time.Now()})
+	require.NoError(t, err)
+	assert.NotContains(t, result, "Priority:")
+	assert.NotContains(t, result, " | Role:")
+	assert.NotContains(t, result, " | Posts:")
+	assert.NotContains(t, result, "Images:")
+}

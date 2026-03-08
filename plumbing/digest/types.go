@@ -119,9 +119,13 @@ type Config struct {
 
 // PipelineSettings captures how a workspace should be processed and rendered.
 type PipelineSettings struct {
-	Provider     string `json:"provider,omitempty"`      // "claude" or "ollama"
-	OutputFormat string `json:"output_format,omitempty"` // "html" or "markdown"
-	Model        string `json:"model,omitempty"`
+	Provider            string `json:"provider,omitempty"`      // "claude" or "ollama"
+	OutputFormat        string `json:"output_format,omitempty"` // "html" or "markdown"
+	Model               string `json:"model,omitempty"`
+	CategorizationModel string `json:"categorization_model,omitempty"`
+	ConsolidationModel  string `json:"consolidation_model,omitempty"`
+	FrontPageModel      string `json:"front_page_model,omitempty"`
+	HeadlinesModel      string `json:"headlines_model,omitempty"`
 }
 
 // TimeRange specifies the time window for fetching posts

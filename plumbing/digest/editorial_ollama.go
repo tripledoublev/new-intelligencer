@@ -85,11 +85,15 @@ type EditorialStoryRevision struct {
 }
 
 type OllamaEnvConfig struct {
-	Host           string `envconfig:"OLLAMA_HOST" default:"http://127.0.0.1:11434"`
-	Model          string `envconfig:"OLLAMA_MODEL" default:"llama3.1:8b"`
-	TimeoutSeconds int    `envconfig:"OLLAMA_TIMEOUT_SECONDS" default:"1800"`
-	Username       string `envconfig:"OLLAMA_USERNAME"`
-	Password       string `envconfig:"OLLAMA_PASSWORD"`
+	Host                string `envconfig:"OLLAMA_HOST" default:"http://127.0.0.1:11434"`
+	Model               string `envconfig:"OLLAMA_MODEL" default:"llama3.1:8b"`
+	CategorizationModel string `envconfig:"OLLAMA_CATEGORIZATION_MODEL"`
+	ConsolidationModel  string `envconfig:"OLLAMA_CONSOLIDATION_MODEL"`
+	FrontPageModel      string `envconfig:"OLLAMA_FRONT_PAGE_MODEL"`
+	HeadlinesModel      string `envconfig:"OLLAMA_HEADLINES_MODEL"`
+	TimeoutSeconds      int    `envconfig:"OLLAMA_TIMEOUT_SECONDS" default:"1800"`
+	Username            string `envconfig:"OLLAMA_USERNAME"`
+	Password            string `envconfig:"OLLAMA_PASSWORD"`
 }
 
 type OllamaEditorialEngine struct {
@@ -435,8 +439,13 @@ Rules:
 - Use only the provided section_id values.
 - Return one assignment for every input rkey.
 - Prefer topical news sections over generic sections.
+- Use the most specific topical section that fits; use "vibes" only when no topical section clearly applies.
 - Use "vibes" for jokes, one-liners, shitposts, or low-stakes personal remarks.
-- Use "fashion" for primarily visual outfit/object posts.
+- Use "fashion" only for outfits, clothing, style, or fashion-history posts.
+- Use "music" only for music itself: artists, songs, albums, concerts, recordings, instruments, scenes, or criticism.
+- Use "tech-atproto" for Bluesky, AT Protocol, PDS/DID/OAuth/lexicon/federation topics.
+- Use "tech-ai" for models, chatbots, LLM tooling, or AI-industry stories.
+- Do not put software, protocol, policy, or internet-governance posts into "music" or "fashion" just because the author is stylish or the post has an image.
 
 Sections:
 %s
@@ -459,7 +468,9 @@ Rules:
 - It is acceptable to create a single-post story when nothing else matches.
 - Choose a strong primary_rkey for each group.
 - draft_headline should be concise and factual.
-- summary should be 1-2 sentences max and optional.
+- draft_headline must not end with "...".
+- summary should be 1-2 sentences max, neutral in tone, and optional.
+- Rewrite slang or profanity into plain editorial language unless it is essential to the meaning.
 
 Section:
 %s
@@ -505,7 +516,9 @@ Rules:
 - Return one item for every provided story_id.
 - Priorities must be unique positive integers, starting at 1.
 - Headlines should read like newspaper headlines, not social posts.
-- summary should be 1-2 sentences max and can refine any draft summary.
+- Headlines and summaries must not end with "...".
+- summary should be 1-2 sentences max, written in neutral editorial prose, and can refine any draft summary.
+- Rewrite slang, first-person reactions, and profanity into plain editorial language unless directly necessary to understand the story.
 %s
 
 Section:
@@ -671,10 +684,15 @@ func normalizeCategorization(posts []Post, sections []NewspaperSection, resp Edi
 	assignments := make([]EditorialAssignment, 0, len(posts))
 	seen := make(map[string]bool)
 	for _, assignment := range resp.Assignments {
-		if seen[assignment.Rkey] || !allowed[assignment.SectionID] {
+		if seen[assignment.Rkey] {
 			continue
 		}
-		if _, ok := postMap[assignment.Rkey]; !ok {
+		post, ok := postMap[assignment.Rkey]
+		if !ok {
+			continue
+		}
+		assignment.SectionID = normalizeAssignedSection(post, assignment.SectionID, sections, allowed)
+		if !allowed[assignment.SectionID] {
 			continue
 		}
 		assignments = append(assignments, assignment)
@@ -948,49 +966,15 @@ func normalizeStoryRole(role string, isOpinion bool) string {
 }
 
 func guessSectionForPost(post Post, sections []NewspaperSection) string {
+	sectionID, _ := bestSectionForPost(post, sections)
+	if sectionID != "" {
+		return sectionID
+	}
+
 	available := make(map[string]bool, len(sections))
 	for _, section := range sections {
 		available[section.ID] = true
 	}
-
-	text := strings.ToLower(strings.Join([]string{
-		post.Text,
-		valueOrEmpty(post.ExternalLink, func(l *ExternalLink) string { return l.Title + " " + l.Description }),
-		valueOrEmpty(post.Quote, func(q *Quote) string { return q.Text }),
-	}, " "))
-
-	type rule struct {
-		keywords []string
-		section  string
-	}
-
-	rules := []rule{
-		{[]string{"atproto", "bluesky", "lexicon", "federated social"}, "tech-atproto"},
-		{[]string{"ai", "llm", "openai", "anthropic", "ollama", "deepseek"}, "tech-ai"},
-		{[]string{"canada", "ottawa", "trudeau", "carney", "canadian"}, "ca-news"},
-		{[]string{"toronto", "ttc", "ontario line", "doug ford", "gta"}, "toronto-news"},
-		{[]string{"trump", "congress", "senate", "house of representatives", "white house", "supreme court"}, "politics-us"},
-		{[]string{"ukraine", "gaza", "israel", "china", "european union", "nato", "geopolitics"}, "geopolitics"},
-		{[]string{"stock", "market", "earnings", "bitcoin", "crypto", "finance", "bond"}, "finance"},
-		{[]string{"soccer", "football", "nba", "nhl", "mlb", "champions league"}, "sports"},
-		{[]string{"novel", "book", "poetry", "publishing", "fiction"}, "literature"},
-		{[]string{"album", "song", "music", "ep", "single", "band"}, "music"},
-		{[]string{"film", "movie", "cinema", "director", "screening"}, "film"},
-		{[]string{"dress", "outfit", "look", "jacket", "boots", "shirt"}, "fashion"},
-		{[]string{"startup", "software", "app", "programming", "tech"}, "tech"},
-	}
-
-	for _, rule := range rules {
-		if !available[rule.section] {
-			continue
-		}
-		for _, keyword := range rule.keywords {
-			if strings.Contains(text, keyword) {
-				return rule.section
-			}
-		}
-	}
-
 	if available["vibes"] {
 		return "vibes"
 	}
@@ -1002,15 +986,108 @@ func guessSectionForPost(post Post, sections []NewspaperSection) string {
 	return "front-page"
 }
 
+func normalizeAssignedSection(post Post, assigned string, sections []NewspaperSection, allowed map[string]bool) string {
+	if !allowed[assigned] {
+		return guessSectionForPost(post, sections)
+	}
+
+	assignedScore := sectionEvidenceScore(post, assigned)
+	guessedSection, guessedScore := bestSectionForPost(post, sections)
+	if guessedSection == "" || guessedSection == assigned {
+		return assigned
+	}
+	if assignedScore == 0 && guessedScore > 0 {
+		return guessedSection
+	}
+	if isWeakSectionAssignment(assigned) && guessedScore > assignedScore {
+		return guessedSection
+	}
+	return assigned
+}
+
+func isWeakSectionAssignment(sectionID string) bool {
+	switch sectionID {
+	case "fashion", "music", "vibes":
+		return true
+	default:
+		return false
+	}
+}
+
+type sectionGuessRule struct {
+	section  string
+	keywords []string
+}
+
+func sectionGuessRules() []sectionGuessRule {
+	return []sectionGuessRule{
+		{section: "tech-atproto", keywords: []string{"atproto", "at protocol", "bluesky", "lexicon", "federated social", "oauth", "pds", "did", "appview", "feed generator", "richtext facet"}},
+		{section: "tech-ai", keywords: []string{" ai ", "llm", "openai", "anthropic", "ollama", "deepseek", "gemini", "claude", "chatgpt", "gpt-"}},
+		{section: "ca-news", keywords: []string{"canada", "ottawa", "trudeau", "carney", "canadian"}},
+		{section: "toronto-news", keywords: []string{"toronto", "ttc", "ontario line", "doug ford", "gta"}},
+		{section: "politics-us", keywords: []string{"trump", "congress", "senate", "house of representatives", "white house", "supreme court", "republicans", "democrats"}},
+		{section: "geopolitics", keywords: []string{"ukraine", "gaza", "israel", "china", "european union", "nato", "geopolitics"}},
+		{section: "finance", keywords: []string{"stock", "market", "earnings", "bitcoin", "crypto", "finance", "bond", "tariff"}},
+		{section: "sports", keywords: []string{"soccer", "football", "nba", "nhl", "mlb", "champions league"}},
+		{section: "literature", keywords: []string{"novel", "book", "poetry", "publishing", "fiction", "essay", "new book", "author"}},
+		{section: "music", keywords: []string{"album", "song", "music", "ep", "single", "band", "musician", "concert", "recording", "playlist"}},
+		{section: "film", keywords: []string{"film", "movie", "cinema", "director", "screening"}},
+		{section: "fashion", keywords: []string{"dress", "outfit", "look", "jacket", "boots", "shirt", "style", "tailoring", "fashion"}},
+		{section: "tech", keywords: []string{"startup", "software", "app", "programming", "tech", "server", "raspberry pi", "nvme", "backup"}},
+	}
+}
+
+func bestSectionForPost(post Post, sections []NewspaperSection) (string, int) {
+	available := make(map[string]bool, len(sections))
+	for _, section := range sections {
+		available[section.ID] = true
+	}
+
+	bestSection := ""
+	bestScore := 0
+	for _, rule := range sectionGuessRules() {
+		if !available[rule.section] {
+			continue
+		}
+		score := sectionEvidenceScore(post, rule.section)
+		if score > bestScore {
+			bestSection = rule.section
+			bestScore = score
+		}
+	}
+	return bestSection, bestScore
+}
+
+func sectionEvidenceScore(post Post, sectionID string) int {
+	text := " " + strings.ToLower(strings.Join([]string{
+		post.Text,
+		valueOrEmpty(post.ExternalLink, func(l *ExternalLink) string { return l.Title + " " + l.Description }),
+		valueOrEmpty(post.Quote, func(q *Quote) string { return q.Text }),
+	}, " ")) + " "
+
+	for _, rule := range sectionGuessRules() {
+		if rule.section != sectionID {
+			continue
+		}
+
+		score := 0
+		for _, keyword := range rule.keywords {
+			if strings.Contains(text, strings.ToLower(keyword)) {
+				score++
+			}
+		}
+		return score
+	}
+
+	return 0
+}
+
 func fallbackHeadlineFromPost(post Post) string {
 	if post.ExternalLink != nil && strings.TrimSpace(post.ExternalLink.Title) != "" {
 		return strings.TrimSpace(post.ExternalLink.Title)
 	}
 	if text := squashWhitespace(post.Text); text != "" {
-		if len(text) > 80 {
-			return text[:77] + "..."
-		}
-		return text
+		return clampEditorialText(text, 80)
 	}
 	return "(Untitled Story)"
 }
@@ -1020,10 +1097,7 @@ func fallbackSummaryFromPost(post Post) string {
 	if text == "" {
 		return ""
 	}
-	if len(text) > 180 {
-		return text[:177] + "..."
-	}
-	return text
+	return clampEditorialText(text, 180)
 }
 
 func fallbackHeadlineCandidate(candidate HeadlineCandidate) string {
@@ -1040,10 +1114,7 @@ func fallbackHeadlineCandidate(candidate HeadlineCandidate) string {
 	if text == "" {
 		return "(Untitled Story)"
 	}
-	if len(text) > 80 {
-		return text[:77] + "..."
-	}
-	return text
+	return clampEditorialText(text, 80)
 }
 
 func fallbackSummaryCandidate(candidate HeadlineCandidate) string {
@@ -1054,10 +1125,20 @@ func fallbackSummaryCandidate(candidate HeadlineCandidate) string {
 	if text == "" {
 		return ""
 	}
-	if len(text) > 180 {
-		return text[:177] + "..."
+	return clampEditorialText(text, 180)
+}
+
+func clampEditorialText(text string, maxLen int) string {
+	text = strings.TrimSpace(text)
+	if maxLen <= 0 || len(text) <= maxLen {
+		return text
 	}
-	return text
+
+	cut := text[:maxLen]
+	if idx := strings.LastIndex(cut, " "); idx >= maxLen/2 {
+		cut = cut[:idx]
+	}
+	return strings.TrimSpace(cut)
 }
 
 func valueOrEmpty[T any](value *T, get func(*T) string) string {

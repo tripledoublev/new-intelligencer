@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
 func validateStoryGroupsForCompile(storyGroups StoryGroups) error {
 	var unprocessed []string
+	var truncated []string
 	for id, story := range storyGroups {
 		if story.Headline == "" || story.Priority == 0 {
 			missing := []string{}
@@ -21,11 +23,22 @@ func validateStoryGroupsForCompile(storyGroups StoryGroups) error {
 			}
 			unprocessed = append(unprocessed, fmt.Sprintf("  %s [%s] (missing: %s)", id, story.SectionID, joinStrings(missing, ", ")))
 		}
+		if hasTrailingEllipsis(story.Headline) {
+			truncated = append(truncated, fmt.Sprintf("  %s [%s] (headline ends with ellipsis)", id, story.SectionID))
+		}
+		if hasTrailingEllipsis(story.Summary) {
+			truncated = append(truncated, fmt.Sprintf("  %s [%s] (summary ends with ellipsis)", id, story.SectionID))
+		}
 	}
 	if len(unprocessed) > 0 {
 		sort.Strings(unprocessed)
 		return fmt.Errorf("compile blocked: %d stories are unprocessed\n%s\n\nRun `./bin/digest show-unprocessed` for details",
 			len(unprocessed), joinStrings(unprocessed, "\n"))
+	}
+	if len(truncated) > 0 {
+		sort.Strings(truncated)
+		return fmt.Errorf("compile blocked: %d stories have truncated editorial text\n%s",
+			len(truncated), joinStrings(truncated, "\n"))
 	}
 
 	var frontPageHeadlines []string
@@ -45,6 +58,14 @@ func validateStoryGroupsForCompile(storyGroups StoryGroups) error {
 	}
 
 	return nil
+}
+
+func hasTrailingEllipsis(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	return strings.HasSuffix(text, "...") || strings.HasSuffix(text, "\u2026")
 }
 
 func compileWorkspaceOutput(wd *WorkspaceData, format string) (string, error) {

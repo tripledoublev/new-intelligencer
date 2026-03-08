@@ -93,12 +93,6 @@ func writeMarkdownStory(b *strings.Builder, story *StoryGroup, postIndex map[str
 		fmt.Fprintf(b, "\nSource: %s\n", story.ArticleURL)
 	}
 
-	fmt.Fprintf(b, "\nPriority: %d", story.Priority)
-	if story.Role != "" {
-		fmt.Fprintf(b, " | Role: %s", story.Role)
-	}
-	fmt.Fprintf(b, " | Posts: %d\n", len(story.PostRkeys))
-
 	for _, rkey := range story.PostRkeys {
 		post, ok := postIndex[rkey]
 		if !ok {
@@ -127,9 +121,6 @@ func writeMarkdownPost(b *strings.Builder, post Post) {
 	}
 	if post.Quote != nil {
 		fmt.Fprintf(b, "  Quote: @%s - %s\n", post.Quote.Author.Handle, squashWhitespace(post.Quote.Text))
-	}
-	if len(post.Images) > 0 {
-		fmt.Fprintf(b, "  Images: %d attachment(s)\n", len(post.Images))
 	}
 }
 

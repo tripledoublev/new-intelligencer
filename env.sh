@@ -15,6 +15,11 @@ fi
 #   OLLAMA_HOST=https://ollama.example.com
 #   OLLAMA_USERNAME=your-username
 #   OLLAMA_PASSWORD=your-password
+#   OLLAMA_MODEL=qwen3.5:9b
+#   OLLAMA_CATEGORIZATION_MODEL=qwen3.5:9b
+#   OLLAMA_CONSOLIDATION_MODEL=qwen3.5:35b
+#   OLLAMA_FRONT_PAGE_MODEL=qwen3.5:35b
+#   OLLAMA_HEADLINES_MODEL=qwen3.5:35b
 
 if [ -z "$BSKY_HANDLE" ] && command -v security >/dev/null 2>&1; then
     export BSKY_HANDLE=$(security find-generic-password -s "bsky-agent" -a "handle" -w 2>/dev/null)

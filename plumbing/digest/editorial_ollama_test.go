@@ -203,3 +203,32 @@ func TestSanitizeTraceLabel(t *testing.T) {
 	assert.Equal(t, "headlines-tech-ai", sanitizeTraceLabel("Headlines: tech/ai"))
 	assert.Equal(t, "ollama-call", sanitizeTraceLabel("   "))
 }
+
+func TestNormalizeCategorization_ReassignsWeakSectionWithoutEvidence(t *testing.T) {
+	sections := []NewspaperSection{
+		{ID: "tech-atproto", Name: "ATProto", Type: "news"},
+		{ID: "music", Name: "Music", Type: "news"},
+		{ID: "fashion", Name: "Fashion", Type: "content"},
+		{ID: "vibes", Name: "Vibes", Type: "content"},
+	}
+	posts := []Post{{
+		Rkey: "r1",
+		Text: "Trying to understand Bluesky OAuth client metadata and AT Protocol account migration",
+		Author: Author{
+			Handle: "example.com",
+		},
+		ExternalLink: &ExternalLink{
+			Title: "OAuth Client Metadata Document",
+		},
+	}}
+
+	resp := normalizeCategorization(posts, sections, EditorialCategorization{
+		Assignments: []EditorialAssignment{{
+			Rkey:      "r1",
+			SectionID: "fashion",
+		}},
+	})
+
+	require.Len(t, resp.Assignments, 1)
+	assert.Equal(t, "tech-atproto", resp.Assignments[0].SectionID)
+}
